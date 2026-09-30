@@ -1,0 +1,93 @@
+import json
+
+from pydantic import BaseModel
+
+from app.services.ai_service import generate_response
+
+
+class IntakeResult(BaseModel):
+    problem_summary: str
+    category: str
+    location: str
+    facts: list[str]
+    missing_information: list[str]
+    urgency: str
+
+
+def intake_case(user_message: str) -> IntakeResult:
+    prompt = f"""
+You are the Intake Agent for Apna Wakeel, a Pakistan-focused legal
+information and navigation system.
+
+Your job is ONLY to understand and structure the user's situation.
+
+Do NOT:
+- give legal advice
+- cite laws
+- make legal conclusions
+- claim that a particular law definitely applies
+- invent facts
+- invent sources
+
+Identify:
+
+1. problem_summary
+2. category
+3. location
+4. facts
+5. missing_information
+6. urgency
+
+Possible categories:
+- traffic_accident
+- property
+- family
+- employment
+- criminal
+- civil
+- harassment
+- fraud
+- identity_documents
+- government_services
+- other
+- unclear
+
+Possible urgency values:
+- emergency
+- urgent
+- normal
+- unclear
+
+Rules:
+- Only use information provided by the user.
+- Do not guess missing facts.
+- If the location is not provided, use "unknown".
+- If the category is unclear, use "unclear".
+- If something important is missing, add it to missing_information.
+- Return ONLY valid JSON.
+
+Required JSON structure:
+
+{{
+    "problem_summary": "string",
+    "category": "string",
+    "location": "string",
+    "facts": [],
+    "missing_information": [],
+    "urgency": "string"
+}}
+
+User's message:
+{user_message}
+"""
+
+    raw_response = generate_response(prompt)
+
+    try:
+        data = json.loads(raw_response)
+        return IntakeResult(**data)
+
+    except (json.JSONDecodeError, ValueError) as e:
+        raise ValueError(
+            f"Intake Agent returned invalid data: {e}"
+        )
