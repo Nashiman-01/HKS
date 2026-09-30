@@ -1,21 +1,27 @@
 import json
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services.ai_service import generate_response
 
 
 class FollowUpResult(BaseModel):
-    needs_follow_up: bool
-    questions: list[str]
-    reason: str
+    needs_follow_up: bool = False
+    questions: list[str] = Field(default_factory=list)
+    reason: str = ""
 
 
 def generate_follow_up_questions(
     user_message: str,
     intake_data: dict,
     classification_data: dict,
+    conversation_history: list[dict] | None = None,
 ) -> FollowUpResult:
+    recent_history = conversation_history or []
+    history_text = "\n".join(
+        f"{message.get('role', 'unknown')}: {str(message.get('content', ''))[:800]}"
+        for message in recent_history[-8:]
+    )
 
     prompt = f"""
 You are the Follow-up Agent for Apna Wakeel.
@@ -38,11 +44,14 @@ IMPORTANT RULES:
 6. Do NOT ask questions about information that is already provided.
 7. Ask only questions that are relevant to understanding the case.
 8. Keep questions simple and easy for a normal user to understand.
-9. Ask a maximum of 5 questions.
+9. Ask a maximum of 3 questions, and only ask for details that could change the guidance.
 10. If enough information is available, set needs_follow_up to false
     and return an empty questions list.
 11. If important information is missing, set needs_follow_up to true.
-12. Return ONLY valid JSON.
+12. Do not repeat questions already asked or answered in the conversation.
+13. If the user is asking what to do next, provide the best available
+    guidance instead of blocking on more details.
+14. Return ONLY valid JSON.
 
 Examples of useful missing information may include:
 - location
@@ -71,6 +80,9 @@ Required JSON structure:
 USER MESSAGE:
 {user_message}
 
+RECENT CONVERSATION:
+{history_text or "No earlier messages."}
+
 INTAKE INFORMATION:
 {json.dumps(intake_data, indent=2)}
 
@@ -82,6 +94,7 @@ CLASSIFICATION INFORMATION:
 
     try:
         data = json.loads(raw_response)
+        data.setdefault("needs_follow_up", bool(data.get("questions")))
         return FollowUpResult(**data)
 
     except (json.JSONDecodeError, ValueError) as e:

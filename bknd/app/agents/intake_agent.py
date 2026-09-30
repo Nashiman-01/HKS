@@ -1,17 +1,17 @@
 import json
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services.ai_service import generate_response
 
 
 class IntakeResult(BaseModel):
-    problem_summary: str
-    category: str
-    location: str
-    facts: list[str]
-    missing_information: list[str]
-    urgency: str
+    problem_summary: str = "Not enough details were provided to summarize the matter."
+    category: str = "unclear"
+    location: str = "unknown"
+    facts: list[str] = Field(default_factory=list)
+    missing_information: list[str] = Field(default_factory=list)
+    urgency: str = "unclear"
 
 
 def intake_case(user_message: str) -> IntakeResult:

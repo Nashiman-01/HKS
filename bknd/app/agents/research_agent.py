@@ -1,15 +1,16 @@
 import json
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services.ai_service import generate_response
 
 
 class ResearchResult(BaseModel):
-    research_questions: list[str]
-    source_types: list[str]
-    priority_jurisdictions: list[str]
-    evidence_needed: list[str]
+    research_questions: list[str] = Field(default_factory=list)
+    source_types: list[str] = Field(default_factory=list)
+    priority_jurisdictions: list[str] = Field(default_factory=list)
+    evidence_needed: list[str] = Field(default_factory=list)
+    laws_to_check: list[str] = Field(default_factory=list)
 
 
 def create_research_plan(
@@ -43,6 +44,7 @@ Your job is to determine:
 2. source_types
 3. priority_jurisdictions
 4. evidence_needed
+5. laws_to_check
 
 Research questions should describe what needs to be verified.
 
@@ -67,6 +69,10 @@ legal level.
 Evidence_needed should describe the specific facts or legal
 information required before a reliable answer can be produced.
 
+Laws_to_check should contain only plausible statute or constitutional
+document names to search in official government catalogs. Do not cite
+sections or claim that a law applies; retrieval and verification happen later.
+
 IMPORTANT:
 
 Do not provide the final legal answer.
@@ -81,7 +87,8 @@ Required JSON structure:
     "research_questions": [],
     "source_types": [],
     "priority_jurisdictions": [],
-    "evidence_needed": []
+    "evidence_needed": [],
+    "laws_to_check": []
 }}
 
 INTAKE INFORMATION:
@@ -97,6 +104,7 @@ CLASSIFICATION INFORMATION:
 
     try:
         data = json.loads(raw_response)
+        data["research_questions"] = data.get("research_questions", [])[:3]
         return ResearchResult(**data)
 
     except (json.JSONDecodeError, ValueError) as e:

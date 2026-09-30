@@ -4,7 +4,8 @@ from app.core.config import settings
 
 
 client = Groq(
-    api_key=settings.groq_api_key
+    api_key=settings.groq_api_key,
+    max_retries=1,
 )
 
 
@@ -13,10 +14,16 @@ def generate_response(user_message: str) -> str:
         model=settings.groq_model,
         messages=[
             {
+                "role": "system",
+                "content": "Return only a valid JSON object.",
+            },
+            {
                 "role": "user",
                 "content": user_message,
             }
         ],
+        response_format={"type": "json_object"},
+        max_completion_tokens=2048,
     )
 
     return response.choices[0].message.content

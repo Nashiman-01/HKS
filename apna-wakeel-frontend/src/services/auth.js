@@ -1,6 +1,7 @@
 import { API_BASE_URL } from "../lib/apiConfig.js";
 
 const AUTH_SESSION_KEY = "apna-wakeel-session";
+const AUTH_CHANGE_EVENT = "apna-wakeel-auth-change";
 
 function normalizeUser(payload) {
   const email = payload?.email || payload?.user?.email || "";
@@ -33,6 +34,8 @@ export function persistSession(session) {
   } else {
     window.localStorage.removeItem(AUTH_SESSION_KEY);
   }
+
+  window.dispatchEvent(new Event(AUTH_CHANGE_EVENT));
 }
 
 export function getStoredSession() {
@@ -142,7 +145,14 @@ export function subscribeToAuthChanges(callback) {
     }
   };
 
+  const handleSessionChange = () => callback(getStoredSession());
+
   callback(getStoredSession());
   window.addEventListener("storage", handleStorage);
-  return () => window.removeEventListener("storage", handleStorage);
+  window.addEventListener(AUTH_CHANGE_EVENT, handleSessionChange);
+
+  return () => {
+    window.removeEventListener("storage", handleStorage);
+    window.removeEventListener(AUTH_CHANGE_EVENT, handleSessionChange);
+  };
 }

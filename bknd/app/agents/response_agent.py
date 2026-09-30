@@ -1,19 +1,20 @@
 import json
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services.ai_service import generate_response
 from app.legal_sources.evidence import EvidenceItem
 
 
 class FinalResponse(BaseModel):
-    answer: str
-    next_steps: list[str]
-    documents_needed: list[str]
-    authorities: list[str]
-    sources: list[EvidenceItem]
-    uncertainty: list[str]
-    disclaimer: str
+    answer: str = "The available information is not sufficient for a specific answer."
+    next_steps: list[str] = Field(default_factory=list)
+    documents_needed: list[str] = Field(default_factory=list)
+    authorities: list[str] = Field(default_factory=list)
+    sources: list[Any] = Field(default_factory=list)
+    uncertainty: list[str] = Field(default_factory=list)
+    disclaimer: str = ""
 
 
 def generate_final_response(
@@ -24,10 +25,11 @@ def generate_final_response(
     verification_results: list[dict],
 ) -> FinalResponse:
 
-    evidence_data = [
-        item.model_dump()
-        for item in evidence
-    ]
+    evidence_data = []
+    for item in evidence[:12]:
+        item_data = item.model_dump()
+        item_data["relevant_text"] = item_data.get("relevant_text", "")[:1800]
+        evidence_data.append(item_data)
 
     prompt = f"""
 You are the Final Response Agent for Apna Wakeel.
@@ -44,17 +46,24 @@ IMPORTANT RULES:
 2. Do NOT invent laws, sections, procedures, authorities, documents,
    deadlines or penalties.
 3. Do NOT use your general legal knowledge as evidence.
-4. If evidence is missing, say that the information could not be
-   verified from the available sources.
+4. If a requested detail is absent, name the checked source set and
+    state what those sources do not specify. Do not use a generic
+    “I do not know” response.
 5. Do NOT pretend that an unsupported claim is verified.
 6. Clearly communicate uncertainty.
 7. Do not guarantee a legal outcome.
-8. Do not present yourself as a lawyer.
+8. Do not claim to be a lawyer or add generic first-person credentials disclaimers.
 9. Use simple language and avoid unnecessary legal jargon.
 10. Separate verified information from uncertainty.
 11. Do not fabricate URLs or sources.
 12. Only list authorities and sources that appear in the supplied
     evidence.
+13. Cite legal propositions inline using statute and section labels
+    explicitly present in the supplied evidence.
+14. If evidence does not establish a provision or procedure, do not
+    invent a citation.
+15. Do not add generic “not a lawyer” or “not legal advice” boilerplate.
+    Mention an under-review status only when the supplied evidence says so.
 
 The response should help the user understand:
 - what their issue appears to be

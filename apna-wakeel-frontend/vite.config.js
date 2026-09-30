@@ -8,10 +8,16 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     server: {
+      host: "0.0.0.0",
+      port: 5173,
       proxy: {
         "/api": backendUrl,
         "/openapi.json": backendUrl,
       },
+    },
+    preview: {
+      host: "0.0.0.0",
+      port: 4173,
     },
   };
 });

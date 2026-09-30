@@ -55,11 +55,26 @@ def get_relevant_sources(
         jurisdiction_match = (
             source.jurisdiction.lower() == jurisdiction.lower()
             or source.jurisdiction.lower() == "pakistan"
+            or (
+                source.source_type.lower() == "legislation"
+                and jurisdiction.lower() in {
+                    "pakistan",
+                    "federal",
+                    "khyber pakhtunkhwa",
+                    "punjab",
+                    "sindh",
+                    "balochistan",
+                    "islamabad capital territory",
+                    "gilgit-baltistan",
+                    "azad jammu and kashmir",
+                }
+            )
         )
 
         domain_match = (
             domain.lower() in source.domain.lower()
             or source.source_type.lower() in domain.lower()
+            or source.source_type.lower() == "legislation"
         )
 
         if jurisdiction_match and domain_match:

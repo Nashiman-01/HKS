@@ -35,7 +35,7 @@ function deriveConversationTitle(input, attachments = []) {
 }
 
 function getChatErrorKey(error) {
-  if (error?.status === 429) return "chat.aiRateLimited";
+  if (error?.status === 429 || /rate.?limit|usage limit|quota|tokens per (day|minute)/i.test(error?.message || "")) return "chat.aiRateLimited";
   if (error?.status === 504) return "chat.aiTimeout";
   if (error?.status === 503 && /database/i.test(error?.message || "")) return "chat.dataUnavailable";
   if (error?.message === "chat_not_connected") return "chat.notConnected";
@@ -44,6 +44,31 @@ function getChatErrorKey(error) {
   if (/database|storage/i.test(error?.message || "")) return "chat.dataUnavailable";
   if (/AI service/i.test(error?.message || "")) return "chat.aiUnavailable";
   return "chat.sendError";
+}
+
+function isOfficialLawUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && [
+      "pakistancode.gov.pk",
+      "www.pakistancode.gov.pk",
+      "kpcode.kp.gov.pk",
+      "www.kpcode.kp.gov.pk",
+    ].includes(url.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function ChatMessageContent({ content }) {
+  const parts = String(content || "").split(/(https:\/\/[^\s]+)/g);
+  return (
+    <p>
+      {parts.map((part, index) => isOfficialLawUrl(part)
+        ? <a key={index} href={part} target="_blank" rel="noreferrer">{part}</a>
+        : part)}
+    </p>
+  );
 }
 
 function ConversationPanel({ conversation, conversationMissing, sending, error, operationError, documents, selectedAttachments, onSelectFiles, onRemoveAttachment, onSend, onRetry, onNewChat, onVoiceConversation }) {
@@ -146,7 +171,7 @@ function ConversationPanel({ conversation, conversationMissing, sending, error, 
             {messages.map((message) => (
               <article className={`chat-message chat-message-${message.role}`} key={message.id}>
                 <span className="message-label">{message.role === "user" ? t("chat.you") : t("chat.assistant")}</span>
-                <p>{message.content}</p>
+                <ChatMessageContent content={message.content} />
                 {message.attachments?.length > 0 && (
                   <ul className="message-attachments" aria-label={t("documents.attachments")}>
                     {message.attachments.map((attachment) => <li key={attachment.id}><Icon name="file" size={16} /><span>{attachment.name}</span></li>)}
@@ -497,7 +522,7 @@ export default function Dashboard({ pathname, navigate, user, accessToken, onLog
       }));
       return { success: true, response: result.message.content };
     } catch (error) {
-      updateConversation(id, (item) => ({ ...item, error: { message: error.message } }));
+      updateConversation(id, (item) => ({ ...item, error: { message: error.message, status: error.status } }));
       return false;
     } finally {
       setSendingIds((current) => {

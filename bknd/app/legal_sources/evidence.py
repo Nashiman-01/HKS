@@ -19,6 +19,12 @@ class EvidenceItem(BaseModel):
     verification_notes: str | None = None
 
     retrieved_at: str | None = None
+
+    citation: str | None = None
+
+    page_number: int | None = None
+
+    official_status: str | None = None
     
 class Claim(BaseModel):
     claim: str

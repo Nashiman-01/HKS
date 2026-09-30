@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from groq import RateLimitError
 from pydantic import BaseModel, field_validator
 from sqlalchemy import text
 
@@ -11,6 +12,80 @@ router = APIRouter(
     prefix="/api/conversations",
     tags=["Conversations"],
 )
+
+
+def format_case_response(pipeline_result: dict) -> str:
+    if pipeline_result.get("status") == "needs_description":
+        return "Please briefly describe what happened and where. Share what outcome you need; you can leave out details you do not know."
+
+    intake = pipeline_result.get("intake", {})
+    response = pipeline_result.get("response", {})
+    sections = []
+
+    case_summary = intake.get("problem_summary")
+    if case_summary:
+        sections.append(f"Case summary:\n{case_summary}")
+
+    answer = response.get("answer")
+    if answer:
+        sections.append(f"What we can tell you now:\n{answer}")
+
+    next_steps = response.get("next_steps") or [
+        "Keep relevant messages, documents, photos, and dates together.",
+        "For advice specific to your situation, consult a qualified lawyer or the relevant local authority.",
+    ]
+    todo_list = "\n".join(f"{index}. {step}" for index, step in enumerate(next_steps, 1))
+    sections.append(f"Your to-do list:\n{todo_list}")
+
+    documents_needed = response.get("documents_needed") or []
+    if documents_needed:
+        documents = "\n".join(f"- {item}" for item in documents_needed)
+        sections.append(f"Keep these documents or details ready:\n{documents}")
+
+    questions = (pipeline_result.get("follow_up", {}).get("questions") or [])[:3]
+    if questions:
+        optional_questions = "\n".join(
+            f"{index}. {question}"
+            for index, question in enumerate(questions, 1)
+        )
+        sections.append(
+            "Optional details you can share (answer any you know, or skip these):\n"
+            f"{optional_questions}"
+        )
+
+    uncertainty = response.get("uncertainty") or []
+    if uncertainty:
+        sections.append("What the available sources do not specify:\n" + "\n".join(f"- {item}" for item in uncertainty))
+
+    legal_references = []
+    seen_references = set()
+    for item in pipeline_result.get("evidence", []):
+        if item.get("source_type") != "legislation":
+            continue
+        reference = item.get("citation") or item.get("source_title")
+        source_url = item.get("source_url")
+        if not reference or not source_url:
+            continue
+        key = (reference, source_url)
+        if key in seen_references:
+            continue
+        seen_references.add(key)
+        status = f" [{item['official_status']}]" if item.get("official_status") else ""
+        legal_references.append(f"- {reference}{status}\n  {source_url}")
+
+    if legal_references:
+        sections.append("Official legal references:\n" + "\n".join(legal_references[:8]))
+    if any(item.get("official_status") == "Under Review" for item in pipeline_result.get("evidence", [])):
+        sections.append("The Pakistan Code marks at least one consolidated text as under review; check the relevant Gazette notification for later amendments.")
+
+    disclaimer = response.get("disclaimer")
+    if disclaimer:
+        normalized_disclaimer = str(disclaimer).lower()
+        boilerplate = ("not a lawyer", "not legal advice", "not a substitute for")
+        if not any(phrase in normalized_disclaimer for phrase in boilerplate):
+            sections.append(str(disclaimer))
+
+    return "\n\n".join(sections) or "I could not prepare a response from the available information. Please try again."
 
 
 class CreateConversationRequest(BaseModel):
@@ -41,7 +116,7 @@ async def create_conversation(
     user=Depends(get_authenticated_user),
 ):
     query = text("""
-        INSERT INTO public.conversations (
+        INSERT INTO conversations (
             user_id,
             title
         )
@@ -89,7 +164,7 @@ async def get_conversations(
             title,
             created_at,
             updated_at
-        FROM public.conversations
+        FROM conversations
         WHERE user_id = :user_id
         ORDER BY updated_at DESC
     """)
@@ -129,7 +204,7 @@ async def get_conversation(
             title,
             created_at,
             updated_at
-        FROM public.conversations
+        FROM conversations
         WHERE id = :conversation_id
           AND user_id = :user_id
     """)
@@ -162,7 +237,7 @@ async def get_conversation(
 # ---------------------------------------------------------
 
 @router.post("/{conversation_id}/messages")
-async def create_message(
+def create_message(
     conversation_id: str,
     data: CreateMessageRequest,
     user=Depends(get_authenticated_user),
@@ -174,7 +249,7 @@ async def create_message(
 
     conversation_query = text("""
         SELECT id
-        FROM public.conversations
+        FROM conversations
         WHERE id = :conversation_id
           AND user_id = :user_id
     """)
@@ -204,7 +279,7 @@ async def create_message(
         SELECT
             role,
             content
-        FROM public.messages
+        FROM messages
         WHERE conversation_id = :conversation_id
         ORDER BY created_at ASC
     """)
@@ -227,7 +302,7 @@ async def create_message(
     # -----------------------------------------------------
 
     user_message_query = text("""
-        INSERT INTO public.messages (
+        INSERT INTO messages (
             conversation_id,
             role,
             content
@@ -258,8 +333,8 @@ async def create_message(
 
         # Update conversation timestamp
         update_query = text("""
-            UPDATE public.conversations
-            SET updated_at = now()
+            UPDATE conversations
+            SET updated_at = CURRENT_TIMESTAMP
             WHERE id = :conversation_id
               AND user_id = :user_id
         """)
@@ -284,6 +359,11 @@ async def create_message(
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Error in process_case: {e}", exc_info=True)
+        if isinstance(e, RateLimitError):
+            raise HTTPException(
+                status_code=429,
+                detail="The AI service has reached its current usage limit. Please check your Groq quota and try again later.",
+            ) from e
         raise HTTPException(
             status_code=500,
             detail="Unable to process the message right now. Please try again.",
@@ -294,15 +374,7 @@ async def create_message(
     # -----------------------------------------------------
 
     try:
-        if pipeline_result.get("status") == "needs_follow_up":
-            follow_up_questions = pipeline_result.get("follow_up", {}).get("questions", [])
-            if follow_up_questions:
-                formatted_questions = "\n".join(f"{i+1}. {q}" for i, q in enumerate(follow_up_questions))
-                ai_response = f"To help provide accurate legal information for your matter under Pakistani law, could you please clarify:\n\n{formatted_questions}"
-            else:
-                ai_response = "Could you please share a few more details about where and when this occurred?"
-        else:
-            ai_response = pipeline_result.get("response", {}).get("answer") or "I have processed your inquiry. Based on Pakistani legal principles, please review the steps and remedies available."
+        ai_response = format_case_response(pipeline_result)
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Error formatting AI response: {e}", exc_info=True)
@@ -316,7 +388,7 @@ async def create_message(
     # -----------------------------------------------------
 
     assistant_message_query = text("""
-        INSERT INTO public.messages (
+        INSERT INTO messages (
             conversation_id,
             role,
             content
@@ -347,8 +419,8 @@ async def create_message(
 
         # Update conversation timestamp again
         update_query = text("""
-            UPDATE public.conversations
-            SET updated_at = now()
+            UPDATE conversations
+            SET updated_at = CURRENT_TIMESTAMP
             WHERE id = :conversation_id
               AND user_id = :user_id
         """)
@@ -385,7 +457,7 @@ async def get_messages(
     # First verify conversation ownership
     conversation_query = text("""
         SELECT id
-        FROM public.conversations
+        FROM conversations
         WHERE id = :conversation_id
           AND user_id = :user_id
     """)
@@ -415,7 +487,7 @@ async def get_messages(
             role,
             content,
             created_at
-        FROM public.messages
+        FROM messages
         WHERE conversation_id = :conversation_id
         ORDER BY created_at ASC
     """)
@@ -449,7 +521,7 @@ async def delete_conversation(
     user=Depends(get_authenticated_user),
 ):
     query = text("""
-        DELETE FROM public.conversations
+        DELETE FROM conversations
         WHERE id = :conversation_id
           AND user_id = :user_id
         RETURNING id

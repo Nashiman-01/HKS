@@ -240,6 +240,7 @@ export default {
   "chat.waiting": "Waiting for the chat service...",
   "chat.notConnected": "The chat service is not connected yet. No response was generated.",
   "chat.sendError": "Your message could not be sent. Check your connection and try again.",
+  "chat.aiUnavailable": "The AI service could not process this message right now. Please try again later.",
   "chat.aiRateLimited": "The AI service has reached its current usage limit. Try again later.",
   "chat.aiTimeout": "The AI service took too long to respond. Please try again.",
   "chat.invalidResponse": "The chat service returned an unreadable response. No answer was displayed.",

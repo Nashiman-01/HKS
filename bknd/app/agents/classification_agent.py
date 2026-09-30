@@ -6,12 +6,12 @@ from app.services.ai_service import generate_response
 
 
 class ClassificationResult(BaseModel):
-    legal_domain: str
-    jurisdiction: str
-    locality: str
-    matter_type: str
-    requires_local_procedure: bool
-    confidence: str
+    legal_domain: str = "unclear"
+    jurisdiction: str = "Unknown"
+    locality: str = "unknown"
+    matter_type: str = "unclear"
+    requires_local_procedure: bool = False
+    confidence: str = "low"
 
 
 def classify_case(intake_data: dict) -> ClassificationResult:
