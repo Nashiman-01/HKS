@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "../lib/apiConfig.js";
-import { supabase } from "../lib/supabase.js";
+import { getStoredSession, persistSession, refreshSession } from "./auth.js";
 import { assertApiRoute, fetchWithSessionRefresh } from "./api.js";
 
 const MAX_DOCUMENT_SIZE = 20 * 1024 * 1024;
@@ -46,17 +46,15 @@ export async function uploadDocument(file, { accessToken, language, onProgress }
         payload = {};
       }
       if (request.status < 200 || request.status >= 300) {
-        if (request.status === 401 && canRefresh && supabase) {
+        if (request.status === 401 && canRefresh && getStoredSession()?.refresh_token) {
           try {
-            const { data, error } = await supabase.auth.refreshSession();
-            if (!error && data.session?.access_token) {
-              requestUpload(data.session.access_token, false);
-              return;
-            }
+            const refreshed = await refreshSession(getStoredSession().refresh_token);
+            requestUpload(refreshed.access_token, false);
+            return;
           } catch (refreshError) {
             if (import.meta.env.DEV) console.error("Could not refresh session for document upload:", refreshError);
+            persistSession(null);
           }
-          await supabase.auth.signOut({ scope: "local" }).catch(() => {});
         }
         const detail = typeof payload.detail === "string" ? payload.detail : `documents.http.${request.status}`;
         reject(new Error(detail));

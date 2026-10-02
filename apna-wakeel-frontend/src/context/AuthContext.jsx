@@ -8,7 +8,7 @@ import {
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [session, setSession] = useState(() => getCurrentSession());
+  const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState("");
 
@@ -23,9 +23,13 @@ export function AuthProvider({ children }) {
       }
     });
 
-    if (active) {
-      setLoading(false);
-    }
+    getCurrentSession()
+      .then((restoredSession) => {
+        if (active) setSession(restoredSession);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
 
     return () => {
       active = false;

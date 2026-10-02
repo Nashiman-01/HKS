@@ -1,4 +1,8 @@
-from fastapi import FastAPI
+import logging
+from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
@@ -9,15 +13,27 @@ from app.api.documents import router as documents_router
 from app.database.connection import engine, initialize_local_schema
 from app.core.config import settings
 
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    initialize_local_schema()
+    yield
+
 app = FastAPI(
     title="Apna Wakeel API",
     description="AI-powered legal information and navigation backend for Pakistan",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()],
+    allow_origins=list(dict.fromkeys([
+        *[origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()],
+        f"{urlsplit(settings.frontend_url).scheme}://{urlsplit(settings.frontend_url).netloc}",
+    ])),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -27,11 +43,6 @@ app.include_router(auth_router)
 app.include_router(conversations_router)
 app.include_router(legal_router)
 app.include_router(documents_router)
-
-
-@app.on_event("startup")
-async def initialize_database():
-    initialize_local_schema()
 
 
 @app.get("/")
@@ -57,10 +68,6 @@ async def health_check():
             "database": "connected",
         }
 
-    except Exception as e:
-        return {
-            "status": "ok",
-            "service": "apna-wakeel-backend",
-            "database": "disconnected",
-            "error": str(e),
-        }
+    except Exception as error:
+        logger.error("Database health check failed: type=%s", type(error).__name__)
+        raise HTTPException(status_code=503, detail="database_unavailable") from None

@@ -14,7 +14,13 @@ class IntakeResult(BaseModel):
     urgency: str = "unclear"
 
 
-def intake_case(user_message: str) -> IntakeResult:
+def intake_case(user_message: str, language: str = "en") -> IntakeResult:
+    language_instruction = {
+        "en": "Write all text values in English.",
+        "ur": "Write all text values in Urdu script.",
+        "roman_urdu": "Write all text values in natural Pakistani Roman Urdu using Latin letters only. Do not use Urdu script.",
+    }.get(language, "Write all text values in English.")
+
     prompt = f"""
 You are the Intake Agent for Apna Wakeel, a Pakistan-focused legal
 information and navigation system.
@@ -59,6 +65,7 @@ Possible urgency values:
 - unclear
 
 Rules:
+- {language_instruction}
 - Only use information provided by the user.
 - Do not guess missing facts.
 - If the location is not provided, use "unknown".

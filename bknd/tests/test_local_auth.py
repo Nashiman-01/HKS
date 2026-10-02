@@ -1,18 +1,19 @@
-import importlib
-import sys
-import uuid
+import pytest
 
 
-def test_auth_service_defaults_to_local_fallback_when_supabase_is_missing():
-    for module_name in ["app.supabase_client", "app.services.auth_service"]:
-        sys.modules.pop(module_name, None)
+def test_auth_service_fails_closed_when_supabase_is_missing(monkeypatch):
+    from app.services import auth_service
 
-    auth_service = importlib.import_module("app.services.auth_service")
-    email = f"demo-{uuid.uuid4().hex[:8]}@example.com"
+    def missing_supabase():
+        raise RuntimeError("supabase_not_configured")
 
-    signup_response = auth_service.signup_user(email, "StrongPass123", "Demo User")
-    assert signup_response.user.email == email
+    monkeypatch.setattr(auth_service, "create_supabase_auth_client", missing_supabase)
 
-    login_response = auth_service.login_user(email, "StrongPass123")
-    assert login_response.user.email == email
-    assert login_response.session.access_token
+    with pytest.raises(RuntimeError, match="supabase_not_configured"):
+        auth_service.signup_user("user@example.com", "password123", "User")
+    with pytest.raises(RuntimeError, match="supabase_not_configured"):
+        auth_service.login_user("user@example.com", "password123")
+    with pytest.raises(RuntimeError, match="supabase_not_configured"):
+        auth_service.get_current_user("token")
+    with pytest.raises(RuntimeError, match="supabase_not_configured"):
+        auth_service.sign_out_user("access-token", "refresh-token")

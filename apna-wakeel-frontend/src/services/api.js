@@ -4,7 +4,7 @@
 // -----------------------------------------------------------------------------
 
 import { API_BASE_URL } from "../lib/apiConfig.js";
-import { getStoredSession, persistSession } from "./auth.js";
+import { getStoredSession, persistSession, refreshSession } from "./auth.js";
 
 const BASE_URL = API_BASE_URL;
 let openApiPromise;
@@ -65,14 +65,26 @@ function buildHeaders(accessToken, includeJson = true) {
 }
 
 export async function fetchWithSessionRefresh(url, options, accessToken, includeJson = true) {
-  const token = accessToken || getStoredSession()?.access_token || "";
+  const storedSession = getStoredSession();
+  const token = storedSession?.access_token || accessToken || "";
   const response = await fetch(url, { ...options, headers: buildHeaders(token, includeJson) });
 
-  if (response.status === 401) {
+  if (response.status !== 401) return response;
+
+  const session = getStoredSession();
+  if (!session?.refresh_token) return response;
+
+  try {
+    if (session.access_token !== token) {
+      return fetch(url, { ...options, headers: buildHeaders(session.access_token, includeJson) });
+    }
+    const refreshed = await refreshSession(session.refresh_token);
+    return fetch(url, { ...options, headers: buildHeaders(refreshed.access_token, includeJson) });
+  } catch {
     persistSession(null);
+    return response;
   }
 
-  return response;
 }
 
 async function getJson(path, accessToken) {
@@ -111,7 +123,7 @@ export async function analyzeProblem({ problem, province, answers, language }) {
   return postJson("/api/analyze", { problem, province, answers, language }, null);
 }
 
-export async function createConversation({ title = "New Chat", accessToken }) {
+export async function createConversation({ title, accessToken }) {
   if (!BASE_URL) throw new Error("chat_not_connected");
   return (await postJson("/api/conversations", { title }, accessToken)).data;
 }
@@ -131,9 +143,14 @@ export async function getConversationMessages({ conversationId, accessToken }) {
   return (await getJson(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, accessToken)).data || [];
 }
 
-export async function sendConversationMessage({ conversationId, content, accessToken }) {
+export async function sendConversationMessage({ conversationId, content, language = "en", labels = {}, documentIds = [], accessToken }) {
   if (!BASE_URL) throw new Error("chat_not_connected");
-  return postJson(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, { content }, accessToken);
+  return postJson(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+    content,
+    language,
+    labels,
+    document_ids: documentIds,
+  }, accessToken);
 }
 
 export async function deleteConversation({ conversationId, accessToken }) {
@@ -141,17 +158,17 @@ export async function deleteConversation({ conversationId, accessToken }) {
   return deleteJson(`/api/conversations/${encodeURIComponent(conversationId)}`, accessToken);
 }
 
-export async function sendChatMessage({ conversationId, messages, accessToken }) {
+export async function sendChatMessage({ conversationId, messages, language = "en", labels = {}, documentIds = [], newChatTitle, accessToken }) {
   if (!BASE_URL) throw new Error("chat_not_connected");
   const content = messages[messages.length - 1]?.content || "";
   if (!content.trim()) throw new Error("chat_invalid_response");
 
   let targetConversationId = conversationId;
   if (!targetConversationId) {
-    targetConversationId = (await createConversation({ title: "New Chat", accessToken })).id;
+    targetConversationId = (await createConversation({ title: newChatTitle, accessToken })).id;
   }
 
-  const payload = await sendConversationMessage({ conversationId: targetConversationId, content, accessToken });
+  const payload = await sendConversationMessage({ conversationId: targetConversationId, content, language, labels, documentIds, accessToken });
   return {
     conversationId: targetConversationId,
     message: { role: "assistant", content: payload.assistant_message?.content || "" },

@@ -23,7 +23,14 @@ def generate_final_response(
     classification_data: dict,
     evidence: list[EvidenceItem],
     verification_results: list[dict],
+    language: str = "en",
 ) -> FinalResponse:
+    language_instruction = {
+        "en": "Write the complete user-facing response in English.",
+        "ur": "Write the complete user-facing response in Urdu script.",
+        "roman_urdu": "Write the complete user-facing response in natural Pakistani Roman Urdu using Latin letters only. Do not use Urdu script.",
+    }.get(language, "Write the complete user-facing response in English.")
+
 
     evidence_data = []
     for item in evidence[:12]:
@@ -42,6 +49,7 @@ for the user.
 
 IMPORTANT RULES:
 
+0. {language_instruction}
 1. Use ONLY the evidence provided below for legal factual claims.
 2. Do NOT invent laws, sections, procedures, authorities, documents,
    deadlines or penalties.
@@ -64,9 +72,18 @@ IMPORTANT RULES:
     invent a citation.
 15. Do not add generic “not a lawyer” or “not legal advice” boilerplate.
     Mention an under-review status only when the supplied evidence says so.
+16. Begin the answer by briefly restating the user's situation using
+    only facts in the user message and intake. Do not add or assume facts.
+17. Then explain the relevant law or code in plain language and connect its verified rule to the stated facts.
+    For each verified rule, identify its supporting source and explain how both relate to the user's stated facts.
+    Cite the statute and section only when that citation appears in the supplied evidence.
+18. If the evidence or missing facts do not establish whether a law
+    applies, say what is uncertain and what information is needed instead
+    of presenting a legal conclusion.
 
 The response should help the user understand:
 - what their issue appears to be
+- how the retrieved law or code relates to the facts they shared
 - what information is supported
 - what they can do next
 - what documents may be relevant

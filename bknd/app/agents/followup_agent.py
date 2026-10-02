@@ -16,12 +16,18 @@ def generate_follow_up_questions(
     intake_data: dict,
     classification_data: dict,
     conversation_history: list[dict] | None = None,
+    language: str = "en",
 ) -> FollowUpResult:
     recent_history = conversation_history or []
     history_text = "\n".join(
         f"{message.get('role', 'unknown')}: {str(message.get('content', ''))[:800]}"
         for message in recent_history[-8:]
     )
+    language_instruction = {
+        "en": "Write every question and the reason in English.",
+        "ur": "Write every question and the reason in Urdu script.",
+        "roman_urdu": "Write every question and the reason in natural Pakistani Roman Urdu using Latin letters only. Do not use Urdu script.",
+    }.get(language, "Write every question and the reason in English.")
 
     prompt = f"""
 You are the Follow-up Agent for Apna Wakeel.
@@ -35,6 +41,7 @@ information research.
 
 IMPORTANT RULES:
 
+0. {language_instruction}
 1. Use ONLY the information provided by the user and the structured
    intake/classification data.
 2. Do NOT invent facts.

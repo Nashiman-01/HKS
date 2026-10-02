@@ -16,7 +16,7 @@ export default function LanguageSwitcher() {
           aria-pressed={language === lang.code}
           onClick={() => setLanguage(lang.code)}
         >
-          {lang.name}
+          {t(`settings.languageName.${lang.code}`)}
         </button>
       ))}
     </div>

@@ -3,23 +3,17 @@ import Navbar from "./components/Navbar.jsx";
 import Footer from "./components/Footer.jsx";
 import Home from "./pages/Home.jsx";
 import Login from "./pages/Login.jsx";
-import Describe from "./pages/Describe.jsx";
-import FollowUp from "./pages/FollowUp.jsx";
-import Analysis from "./pages/Analysis.jsx";
-import Results from "./pages/Results.jsx";
+import ForgotPassword from "./pages/ForgotPassword.jsx";
+import ResetPassword from "./pages/ResetPassword.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Alert from "./components/Alert.jsx";
 import { useLanguage } from "./i18n/LanguageContext.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
 
 export default function App() {
-  const { t, language } = useLanguage();
+  const { t } = useLanguage();
   const { user, session, loading: authLoading, logout, authError, setAuthError } = useAuth();
   const [pathname, setPathname] = useState(() => window.location.pathname);
-  const [step, setStep] = useState("home");
-  const [problem, setProblem] = useState({ text: "", province: "" });
-  const [answers, setAnswers] = useState([]);
-  const [result, setResult] = useState(null);
   const mainRef = useRef(null);
 
   useEffect(() => {
@@ -37,25 +31,18 @@ export default function App() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (user && !pathname.startsWith("/app")) navigate("/app", true);
+    if (user && !pathname.startsWith("/app") && !["/forgot-password", "/reset-password"].includes(pathname)) navigate("/app", true);
     if (!user && pathname.startsWith("/app")) navigate("/login", true);
   }, [authLoading, user, pathname]);
 
   useEffect(() => {
     window.scrollTo(0, 0);
     mainRef.current?.focus({ preventScroll: true });
-  }, [step, pathname]);
+  }, [pathname]);
 
   function goToSection(id) {
-    setStep("home");
+    if (window.location.pathname !== "/") navigate("/");
     setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" }), 50);
-  }
-
-  function restart() {
-    setProblem({ text: "", province: "" });
-    setAnswers([]);
-    setResult(null);
-    setStep("describe");
   }
 
   async function handleLogout() {
@@ -69,7 +56,8 @@ export default function App() {
   }
 
   const inApp = pathname.startsWith("/app");
-  const onLoginPage = pathname === "/login";
+  const onAuthPage = ["/login", "/signup", "/forgot-password", "/reset-password"].includes(pathname);
+  const authMode = pathname === "/signup" ? "signup" : "login";
 
   return (
     <>
@@ -79,7 +67,7 @@ export default function App() {
           user={user}
           onHome={() => navigate(user ? "/app" : "/")}
           onNavigate={goToSection}
-          onStart={() => setStep("describe")}
+          onStart={() => navigate("/signup")}
           onLogin={() => navigate("/login")}
           onLogout={handleLogout}
           onAccount={() => navigate("/app")}
@@ -104,46 +92,28 @@ export default function App() {
             </div>
           </div>
         ) : (
-          <div key={`${pathname}-${step}`} className="page-fade">
-            {!user && authError && !onLoginPage && (
+          <div key={pathname} className="page-fade">
+            {!user && authError && !onAuthPage && (
               <div className="container flow-page">
                 <Alert tone="error" icon="alert" role="alert">{t(`auth.${authError}`)}</Alert>
               </div>
             )}
-            {onLoginPage && !user && <Login onAuthenticated={() => navigate("/app", true)} />}
-            {!onLoginPage && step === "home" && <Home onStart={() => setStep("describe")} />}
-            {!onLoginPage && step === "describe" && (
-              <Describe
-                initialValue={problem}
-                onContinue={(value) => {
-                  setProblem(value);
-                  setStep("followup");
-                }}
+            {["/login", "/signup"].includes(pathname) && !user && (
+              <Login
+                initialMode={authMode}
+                onAuthenticated={() => navigate("/app", true)}
+                onModeChange={(mode) => navigate(mode === "signup" ? "/signup" : "/login")}
+                onForgotPassword={() => navigate("/forgot-password")}
               />
             )}
-            {!onLoginPage && step === "followup" && (
-              <FollowUp
-                problem={problem}
-                onBack={() => setStep("describe")}
-                onDone={(list) => {
-                  setAnswers(list);
-                  setStep("analysis");
-                }}
-              />
+            {pathname === "/forgot-password" && (
+              <ForgotPassword onBack={() => navigate("/login")} />
             )}
-            {!onLoginPage && step === "analysis" && (
-              <Analysis
-                problem={problem}
-                answers={answers}
-                onBack={() => setStep("describe")}
-                onDone={(data) => {
-                  setResult(data);
-                  setStep("results");
-                }}
-              />
+            {pathname === "/reset-password" && (
+              <ResetPassword onComplete={() => navigate("/login", true)} onBack={() => navigate("/login")} />
             )}
-            {!onLoginPage && step === "results" && result && (
-              <Results result={result} problem={problem} answers={answers} onRestart={restart} />
+            {!onAuthPage && (
+              <Home onStart={() => navigate("/signup")} />
             )}
           </div>
         )}

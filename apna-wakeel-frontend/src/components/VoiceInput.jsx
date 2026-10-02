@@ -17,8 +17,8 @@ import { useLanguage } from "../i18n/LanguageContext.jsx";
 // panel never changes the problem textarea on its own.
 
 export default function VoiceInput({ onAppend }) {
-  const { t, language } = useLanguage();
-  const [speechLang, setSpeechLang] = useState(language === "ur" ? "ur" : "en");
+  const { t, language, voiceLanguage, setVoiceLanguage } = useLanguage();
+  const [speechLang, setSpeechLang] = useState(voiceLanguage || (language === "ur" ? "ur" : language === "roman_urdu" ? "roman_urdu" : "en"));
   const [status, setStatus] = useState("idle");
   const [liveText, setLiveText] = useState("");
   const [finalText, setFinalText] = useState("");
@@ -26,15 +26,16 @@ export default function VoiceInput({ onAppend }) {
   const supportedRef = useRef(null);
   const liveTextRef = useRef(""); // latest interim text, for onEnd's fallback (state can be stale in that closure)
 
-  // Keep the speech language in step with the interface language until the
-  // person picks one themselves.
+  // Keep the speech language in step with the selected app language when the
+  // user has not explicitly picked a different voice language.
   useEffect(() => {
-    setSpeechLang(language === "ur" ? "ur" : "en");
-  }, [language]);
+    const nextSpeechLang = voiceLanguage || (language === "ur" ? "ur" : language === "roman_urdu" ? "roman_urdu" : "en");
+    setSpeechLang(nextSpeechLang);
+  }, [language, voiceLanguage]);
 
-  if (supportedRef.current === null) {
+  useEffect(() => {
     supportedRef.current = createSpeechRecognizer(speechLang).supported;
-  }
+  }, [speechLang]);
 
   // If this browser has no speech recognition at all, say so up front instead
   // of leaving a mic button that can never be pressed.
@@ -117,7 +118,10 @@ export default function VoiceInput({ onAppend }) {
                 role="radio"
                 aria-checked={speechLang === "en"}
                 className={speechLang === "en" ? "active" : ""}
-                onClick={() => setSpeechLang("en")}
+                onClick={() => {
+                  setSpeechLang("en");
+                  setVoiceLanguage("en");
+                }}
               >
                 English
               </button>
@@ -126,9 +130,24 @@ export default function VoiceInput({ onAppend }) {
                 role="radio"
                 aria-checked={speechLang === "ur"}
                 className={speechLang === "ur" ? "active" : ""}
-                onClick={() => setSpeechLang("ur")}
+                onClick={() => {
+                  setSpeechLang("ur");
+                  setVoiceLanguage("ur");
+                }}
               >
                 اردو
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={speechLang === "roman_urdu"}
+                className={speechLang === "roman_urdu" ? "active" : ""}
+                onClick={() => {
+                  setSpeechLang("roman_urdu");
+                  setVoiceLanguage("roman_urdu");
+                }}
+              >
+                Roman Urdu
               </button>
             </div>
           )}

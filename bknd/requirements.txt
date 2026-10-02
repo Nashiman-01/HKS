@@ -96,6 +96,7 @@ PyJWT==2.13.0
 pyphen==0.18.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.3
+python-multipart==0.0.20
 PyYAML==6.0.3
 realtime==2.31.0
 # -e c:\users\husna\downloads\reconx-main\reconx-main

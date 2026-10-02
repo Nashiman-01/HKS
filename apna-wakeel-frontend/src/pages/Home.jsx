@@ -105,9 +105,6 @@ export default function Home({ onStart }) {
             <h2 id="about-title">{t("about.title")}</h2>
             <p>{t("about.p1")}</p>
             <p>{t("about.p2")}</p>
-            <Button iconAfter="arrow" onClick={onStart}>
-              {t("about.cta")}
-            </Button>
           </div>
           <div className="about-emblem">
             <Logo size={240} />

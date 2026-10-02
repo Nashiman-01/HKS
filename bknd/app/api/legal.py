@@ -1,10 +1,15 @@
 import json
 import logging
 from typing import Any
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from groq import RateLimitError
 
-from app.services.ai_service import client, settings
+from app.services.ai_service import generate_response
+from app.agents.orchestrator import process_case
+from app.legal_sources.source_registry import LEGAL_SOURCES
 
 router = APIRouter(
     prefix="/api",
@@ -104,17 +109,17 @@ def normalize_analysis(result: dict, problem: str, province: str, language: str)
         timeline = [
             {
                 "title": "مرحلہ ۱: دستاویزات اور ثبوت کی تیاری" if is_urdu else "Phase 1: Evidence Gathering" if not is_roman else "Marhala 1: Dastawizat ki tayari",
-                "time": "1 to 3 days",
+                "time": "۱ سے ۳ دن" if is_urdu else "1 to 3 days" if not is_roman else "1 se 3 din",
                 "detail": "شناختی کارڈ، معاہدات، رسیدیں اور رابطوں کا ریکارڈ محفوظ کریں۔" if is_urdu else "Compile CNIC, contracts, receipts, and communication logs." if not is_roman else "CNIC, contracts aur receipts jama karein.",
             },
             {
                 "title": "مرحلہ ۲: قانونی نوٹس یا باضابطہ درخواست" if is_urdu else "Phase 2: Legal Notice / Formal Application" if not is_roman else "Marhala 2: Qanooni Notice",
-                "time": "1 to 2 weeks",
+                "time": "۱ سے ۲ ہفتے" if is_urdu else "1 to 2 weeks" if not is_roman else "1 se 2 haftay",
                 "detail": "وکیل کے ذریعے فریق مخالف کو باضابطہ نوٹس بھجوائیں۔" if is_urdu else "Serve a formal legal notice giving reasonable opportunity to comply." if not is_roman else "Wakeel ke zariye notice bhijwayein.",
             },
             {
                 "title": "مرحلہ ۳: عدالتی کارروائی یا تصفیہ" if is_urdu else "Phase 3: Formal Proceedings or Settlement" if not is_roman else "Marhala 3: Adalati Karwayi",
-                "time": "1 to 3 months",
+                "time": "۱ سے ۳ ماہ" if is_urdu else "1 to 3 months" if not is_roman else "1 se 3 mahinay",
                 "detail": "عدالت میں دعویٰ دائر کریں یا باہمی تصفیے کے تحت فیصلہ حاصل کریں۔" if is_urdu else "Initiate formal suit or conclude through mediated settlement." if not is_roman else "Adalat mein case daire karein ya settlement karein.",
             },
         ]
@@ -197,16 +202,8 @@ def normalize_analysis(result: dict, problem: str, province: str, language: str)
 
     # Sources
     sources = result.get("sources")
-    if not isinstance(sources, list) or len(sources) == 0:
-        sources = [
-            {
-                "title": "Code of Civil Procedure, 1908 / Specific Relief Act, 1877",
-                "type": "Federal Statute",
-                "note": "قانونِ پاکستان وزارتِ قانون و انصاف" if is_urdu else "Official laws published by Ministry of Law & Justice" if not is_roman else "Pakistan Code Official",
-                "url": "https://pakistancode.gov.pk",
-                "status": "verified",
-            }
-        ]
+    if not isinstance(sources, list):
+        sources = []
 
     # Disclaimer
     disclaimer = result.get("disclaimer") or (
@@ -216,7 +213,7 @@ def normalize_analysis(result: dict, problem: str, province: str, language: str)
     )
 
     return {
-        "isDemo": False,
+        "isDemo": not bool(result),
         "legalArea": legal_area,
         "explanation": explanation,
         "relevantInfo": relevant_info,
@@ -301,12 +298,7 @@ JSON Format:
 """
 
     try:
-        response = client.chat.completions.create(
-            model=settings.groq_model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content
+        content = generate_response(prompt)
         parsed = json.loads(content)
 
         questions = parsed.get("questions", [])
@@ -331,63 +323,12 @@ JSON Format:
 
         return {"questions": normalized}
 
-    except Exception as e:
-        logger.warning(f"Failed to generate dynamic questions via Groq: {e}, using fallback.")
-        if "ur" in language and "roman" not in language:
-            fallback = [
-                {
-                    "id": "q1",
-                    "text": "آپ کی صورتحال کو کون سا بیان بہتر طور پر ظاہر کرتا ہے؟",
-                    "type": "choice",
-                    "options": ["جائیداد یا زمین کا تنازع", "خاندانی یا وراثت کا مسئلہ", "معاہدہ یا پیسوں کا لین دین", "کوئی اور مسئلہ"],
-                },
-                {
-                    "id": "q2",
-                    "text": "کیا آپ کے پاس متعلقہ سرکاری کاغذات یا ثبوت موجود ہیں؟",
-                    "type": "yesno",
-                    "hint": "مثلاً رجسٹری، معاہدہ، رسید یا شناختی دستاویزات۔",
-                },
-                {
-                    "id": "q3",
-                    "text": "کیا پولیس یا عدالت میں پہلے سے کوئی درخواست جمع کرائی گئی ہے؟",
-                    "type": "yesno",
-                    "hint": "سچ بتانے سے ہمیں آپ کی بہتر رہنمائی کرنے میں مدد ملتی ہے۔",
-                },
-                {
-                    "id": "q4",
-                    "text": "کیا کوئی اور اہم بات ہے جو ہمیں معلوم ہونی چاہیے؟",
-                    "type": "text",
-                    "hint": "واقعہ کی تاریخ یا دیگر تفصیلات۔",
-                }
-            ]
-        else:
-            fallback = [
-                {
-                    "id": "q1",
-                    "text": "Which statement best describes your situation?",
-                    "type": "choice",
-                    "options": ["Property or boundary dispute", "Family or inheritance matter", "Contract or financial claim", "Other legal issue"],
-                },
-                {
-                    "id": "q2",
-                    "text": "Do you have official paperwork, receipts, or agreements?",
-                    "type": "yesno",
-                    "hint": "E.g., sale deed, registry, rental agreement, or communication proof.",
-                },
-                {
-                    "id": "q3",
-                    "text": "Has any official complaint or court case already been filed?",
-                    "type": "yesno",
-                    "hint": "Knowing this helps outline the next legal procedure.",
-                },
-                {
-                    "id": "q4",
-                    "text": "Is there anything else we should know about this issue?",
-                    "type": "text",
-                    "hint": "Dates, names, or key background information.",
-                }
-            ]
-        return {"questions": fallback}
+    except RateLimitError:
+        logger.warning("Follow-up question provider rate limited the request")
+        raise HTTPException(status_code=429, detail="legal.aiRateLimited") from None
+    except Exception as error:
+        logger.warning("Follow-up question generation failed: type=%s", type(error).__name__)
+        raise HTTPException(status_code=503, detail="legal.aiUnavailable") from None
 
 
 @router.post("/analyze")
@@ -402,56 +343,81 @@ async def analyze_problem(data: AnalyzeRequest):
     if not problem:
         raise HTTPException(status_code=400, detail="Problem description cannot be empty")
 
-    answers_summary = "\n".join([f"- {a.question}: {a.answer}" for a in data.answers if a.answer])
-
-    lang_instruction = "Write the entire response in clear English."
-    if "ur" in language and "roman" not in language:
-        lang_instruction = "Write the entire response in Urdu (نستعلیق رسم الخط میں)."
-    elif "roman" in language:
-        lang_instruction = "Write the entire response in Roman Urdu (Urdu written using the English alphabet)."
-
-    prompt = f"""
-You are the Senior Legal Navigation Engine for "Apna Wakeel", an AI-powered legal guidance and citizen rights platform for Pakistan.
-Analyze the following citizen's legal problem under Pakistani law (Federal laws, Provincial laws for {province or 'Pakistan'}, and institutional procedures).
-
-User's Problem:
-{problem}
-
-Province:
-{province or 'Federal / Pakistan'}
-
-Answers to Follow-up Questions:
-{answers_summary if answers_summary else 'No additional answers provided.'}
-
-Language Instruction:
-{lang_instruction}
-
-IMPORTANT INSTRUCTIONS:
-1. Provide realistic, practical legal guidance under Pakistani law.
-2. Return ONLY a valid JSON object matching the exact keys below:
-- legalArea: {{"name": "...", "tag": "..."}}
-- explanation: ["paragraph 1", "paragraph 2"]
-- relevantInfo: [{{"title": "...", "text": "..."}}]
-- authority: {{"name": "...", "description": "...", "howToReach": ["step 1", "step 2"]}}
-- timeline: [{{"title": "...", "time": "...", "detail": "..."}}]
-- documents: ["doc 1", "doc 2"]
-- evidence: ["evidence 1", "evidence 2"]
-- actionPlan: [{{"when": "...", "title": "...", "detail": "..."}}]
-- lawyerType: {{"type": "...", "reason": "...", "prepare": ["item 1"]}}
-- caseAssessment: {{"summary": "...", "strengths": ["..."], "weaknesses": ["..."], "missingInfo": ["..."], "evidenceStrength": "moderate", "preparedness": "reasonable", "improve": ["..."]}}
-- sources: [{{"title": "...", "type": "Statute", "note": "...", "url": "https://pakistancode.gov.pk", "status": "verified"}}]
-"""
-
+    answers_summary = "\n".join(f"- {answer.question}: {answer.answer}" for answer in data.answers if answer.answer)
+    user_message = problem
+    if answers_summary:
+        user_message = f"{problem}\n\nAdditional facts provided by the user:\n{answers_summary}"
     try:
-        response = client.chat.completions.create(
-            model=settings.groq_model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        content = response.choices[0].message.content
-        result = json.loads(content)
-        return normalize_analysis(result, problem, province, language)
+        pipeline = process_case(user_message, language=language)
+    except RateLimitError:
+        logger.warning("Legal analysis provider rate limited the request")
+        raise HTTPException(status_code=429, detail="legal.aiRateLimited") from None
+    except Exception as error:
+        logger.error("Legal analysis failed: type=%s", type(error).__name__)
+        raise HTTPException(status_code=503, detail="legal.aiUnavailable") from None
 
-    except Exception as e:
-        logger.warning(f"Error or partial response from LLM: {e}, falling back to normalized analysis.")
-        return normalize_analysis({}, problem, province, language)
+    intake = pipeline.get("intake") or {}
+    classification = pipeline.get("classification") or {}
+    response = pipeline.get("response") or {}
+    evidence = pipeline.get("evidence") or []
+    official_domains = {source.official_domain.lower() for source in LEGAL_SOURCES}
+    official_domains.add("kpcode.kp.gov.pk")
+    sources = []
+    for item in evidence:
+        url = item.get("source_url") or ""
+        parsed_url = urlparse(url)
+        host = (parsed_url.hostname or "").lower()
+        if parsed_url.scheme != "https" or not any(host == domain or host.endswith(f".{domain}") for domain in official_domains):
+            continue
+        sources.append({
+            "title": item.get("citation") or item.get("source_title") or item.get("source_name") or "Official source",
+            "type": item.get("source_type") or "Official source",
+            "note": item.get("official_status") or item.get("verification_notes") or "Retrieved from an official domain; source content has not received human legal review.",
+            "url": url,
+            "status": "verified" if item.get("verified") is True else "unverified",
+        })
+
+    if sources:
+        explanation = [response.get("answer")] if response.get("answer") else []
+    else:
+        explanation = [
+            "Official legal-source evidence could not be retrieved for this request. We cannot provide case-specific guidance from unverified model output. Please try again later or consult a qualified local lawyer.",
+        ]
+        if "ur" in language and "roman" not in language:
+            explanation = ["اس درخواست کے لیے سرکاری قانونی ماخذ سے شواہد حاصل نہیں ہو سکے۔ غیر تصدیق شدہ AI جواب پر مخصوص رہنمائی دینا محفوظ نہیں۔ براہِ کرم بعد میں دوبارہ کوشش کریں یا مستند مقامی وکیل سے رجوع کریں۔"]
+        elif "roman" in language:
+            explanation = ["Is darkhwast ke liye official qanooni sources se daleel hasil nahi ho saki. Ghair-tasdeeq-shuda AI jawab par khaas rehnumai dena munasib nahi. Baad mein dobara koshish karein ya mustanad local wakeel se rabta karein."]
+
+    authorities = response.get("authorities") or []
+    authority = None
+    if sources and authorities:
+        authority = {
+            "name": authorities[0],
+            "description": "Suggested from the retrieved evidence. Confirm local jurisdiction and procedure with a qualified lawyer.",
+            "howToReach": [],
+        }
+    return {
+        "isDemo": False,
+        "legalArea": {
+            "name": classification.get("legal_domain") or "Unclear",
+            "tag": classification.get("matter_type") or "Unclear",
+        },
+        "explanation": explanation,
+        "relevantInfo": [
+            {"title": item.get("citation") or item.get("source_title") or item.get("source_name", "Official source"), "text": (item.get("relevant_text") or "")[:1200]}
+            for item in evidence[:5]
+            if item.get("relevant_text")
+        ],
+        "authority": authority,
+        "timeline": [],
+        "documents": response.get("documents_needed", []) if sources else [],
+        "evidence": [],
+        "actionPlan": [{"when": "", "title": step, "detail": ""} for step in (response.get("next_steps") or [])] if sources else [],
+        "sources": sources,
+        "sourceStatus": "retrieved" if sources else "none",
+        "intake": {"problem_summary": intake.get("problem_summary") or problem[:160]},
+        "classification": {
+            "jurisdiction": classification.get("jurisdiction") or province or "Pakistan",
+            "locality": classification.get("locality") or province or "unknown",
+        },
+    }

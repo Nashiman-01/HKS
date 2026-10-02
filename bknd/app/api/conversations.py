@@ -1,11 +1,16 @@
+import uuid
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from groq import RateLimitError
-from pydantic import BaseModel, field_validator
-from sqlalchemy import text
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import bindparam, text
 
 from app.api.dependencies import get_authenticated_user
 from app.database.connection import engine
 from app.agents.orchestrator import process_case
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(
@@ -14,9 +19,37 @@ router = APIRouter(
 )
 
 
-def format_case_response(pipeline_result: dict) -> str:
+def format_case_response(pipeline_result: dict, labels: dict[str, str] | None = None) -> str:
+    message_labels = {
+        "caseSummary": "Case summary",
+        "currentGuidance": "What we can tell you now",
+        "nextSteps": "Your to-do list",
+        "documentsNeeded": "Keep these documents or details ready",
+        "optionalDetails": "Optional details you can share (answer any you know, or skip these)",
+        "officialReferences": "Official legal references",
+        "aiGenerated": "AI-generated guidance",
+        "sourceVerified": "Verified against retrieved evidence",
+        "sourceRetrieved": "Retrieved from an official source; not independently verified",
+        "noOfficialEvidence": "No official source evidence was retrieved. Treat this response as limited and unverified.",
+        "uncertainty": "What the available sources do not specify",
+        "legalDisclaimer": "This is general legal information, not legal advice. Confirm important steps with a qualified local lawyer.",
+        "underReview": " [Under Review]",
+        "underReviewNotice": "The Pakistan Code marks at least one consolidated text as under review; check the relevant Gazette notification for later amendments.",
+        "needDescription": "Please briefly describe what happened and where. Share what outcome you need; you can leave out details you do not know.",
+        "responseUnavailable": "I could not prepare a response from the available information. Please try again.",
+    }
+    message_labels.update({key: value for key, value in (labels or {}).items() if isinstance(value, str)})
+
     if pipeline_result.get("status") == "needs_description":
-        return "Please briefly describe what happened and where. Share what outcome you need; you can leave out details you do not know."
+        return message_labels["needDescription"]
+
+    if pipeline_result.get("status") == "evidence_unavailable":
+        intake = pipeline_result.get("intake", {})
+        sections = []
+        if intake.get("problem_summary"):
+            sections.append(f"{message_labels['caseSummary']}:\n{intake['problem_summary']}")
+        sections.extend((message_labels["noOfficialEvidence"], message_labels["legalDisclaimer"]))
+        return "\n\n".join(sections)
 
     intake = pipeline_result.get("intake", {})
     response = pipeline_result.get("response", {})
@@ -24,23 +57,23 @@ def format_case_response(pipeline_result: dict) -> str:
 
     case_summary = intake.get("problem_summary")
     if case_summary:
-        sections.append(f"Case summary:\n{case_summary}")
+        sections.append(f"{message_labels['caseSummary']}:\n{case_summary}")
 
     answer = response.get("answer")
     if answer:
-        sections.append(f"What we can tell you now:\n{answer}")
+        sections.append(f"{message_labels['aiGenerated']}\n{message_labels['currentGuidance']}:\n{answer}")
 
     next_steps = response.get("next_steps") or [
         "Keep relevant messages, documents, photos, and dates together.",
         "For advice specific to your situation, consult a qualified lawyer or the relevant local authority.",
     ]
     todo_list = "\n".join(f"{index}. {step}" for index, step in enumerate(next_steps, 1))
-    sections.append(f"Your to-do list:\n{todo_list}")
+    sections.append(f"{message_labels['nextSteps']}:\n{todo_list}")
 
     documents_needed = response.get("documents_needed") or []
     if documents_needed:
         documents = "\n".join(f"- {item}" for item in documents_needed)
-        sections.append(f"Keep these documents or details ready:\n{documents}")
+        sections.append(f"{message_labels['documentsNeeded']}:\n{documents}")
 
     questions = (pipeline_result.get("follow_up", {}).get("questions") or [])[:3]
     if questions:
@@ -48,20 +81,15 @@ def format_case_response(pipeline_result: dict) -> str:
             f"{index}. {question}"
             for index, question in enumerate(questions, 1)
         )
-        sections.append(
-            "Optional details you can share (answer any you know, or skip these):\n"
-            f"{optional_questions}"
-        )
+        sections.append(f"{message_labels['optionalDetails']}:\n{optional_questions}")
 
     uncertainty = response.get("uncertainty") or []
     if uncertainty:
-        sections.append("What the available sources do not specify:\n" + "\n".join(f"- {item}" for item in uncertainty))
+        sections.append(f"{message_labels['uncertainty']}:\n" + "\n".join(f"- {item}" for item in uncertainty))
 
     legal_references = []
     seen_references = set()
     for item in pipeline_result.get("evidence", []):
-        if item.get("source_type") != "legislation":
-            continue
         reference = item.get("citation") or item.get("source_title")
         source_url = item.get("source_url")
         if not reference or not source_url:
@@ -70,13 +98,15 @@ def format_case_response(pipeline_result: dict) -> str:
         if key in seen_references:
             continue
         seen_references.add(key)
-        status = f" [{item['official_status']}]" if item.get("official_status") else ""
+        status = message_labels["underReview"] if item.get("official_status") == "Under Review" else f" [{item['official_status']}]" if item.get("official_status") else f" [{message_labels['sourceVerified'] if item.get('verified') is True else message_labels['sourceRetrieved']}]"
         legal_references.append(f"- {reference}{status}\n  {source_url}")
 
     if legal_references:
-        sections.append("Official legal references:\n" + "\n".join(legal_references[:8]))
+        sections.append(f"{message_labels['officialReferences']}:\n" + "\n".join(legal_references[:8]))
+    else:
+        sections.append(message_labels["noOfficialEvidence"])
     if any(item.get("official_status") == "Under Review" for item in pipeline_result.get("evidence", [])):
-        sections.append("The Pakistan Code marks at least one consolidated text as under review; check the relevant Gazette notification for later amendments.")
+        sections.append(message_labels["underReviewNotice"])
 
     disclaimer = response.get("disclaimer")
     if disclaimer:
@@ -85,7 +115,9 @@ def format_case_response(pipeline_result: dict) -> str:
         if not any(phrase in normalized_disclaimer for phrase in boilerplate):
             sections.append(str(disclaimer))
 
-    return "\n\n".join(sections) or "I could not prepare a response from the available information. Please try again."
+    sections.append(message_labels["legalDisclaimer"])
+
+    return "\n\n".join(sections) or message_labels["responseUnavailable"]
 
 
 class CreateConversationRequest(BaseModel):
@@ -94,6 +126,9 @@ class CreateConversationRequest(BaseModel):
 
 class CreateMessageRequest(BaseModel):
     content: str
+    language: str = "en"
+    labels: dict[str, str] = Field(default_factory=dict)
+    document_ids: list[str] = Field(default_factory=list, max_length=5)
 
     @field_validator("content")
     @classmethod
@@ -117,10 +152,12 @@ async def create_conversation(
 ):
     query = text("""
         INSERT INTO conversations (
+            id,
             user_id,
             title
         )
         VALUES (
+            :id,
             :user_id,
             :title
         )
@@ -136,6 +173,7 @@ async def create_conversation(
         result = connection.execute(
             query,
             {
+                "id": str(uuid.uuid4()),
                 "user_id": str(user.id),
                 "title": data.title,
             },
@@ -271,6 +309,25 @@ def create_message(
             detail="Conversation not found",
         )
 
+    selected_documents = []
+    document_ids = list(dict.fromkeys(data.document_ids))
+    if document_ids:
+        documents_query = text("""
+            SELECT id, name, type, size, extracted_text
+            FROM documents
+            WHERE user_id = :user_id AND id IN :document_ids
+        """).bindparams(bindparam("document_ids", expanding=True))
+        with engine.connect() as connection:
+            selected_documents = [
+                dict(document)
+                for document in connection.execute(documents_query, {
+                    "user_id": str(user.id),
+                    "document_ids": document_ids,
+                }).mappings().all()
+            ]
+        if len(selected_documents) != len(document_ids):
+            raise HTTPException(status_code=404, detail="Document not found")
+
     # -----------------------------------------------------
     # 2. Get previous conversation messages
     # -----------------------------------------------------
@@ -303,11 +360,13 @@ def create_message(
 
     user_message_query = text("""
         INSERT INTO messages (
+            id,
             conversation_id,
             role,
             content
         )
         VALUES (
+            :id,
             :conversation_id,
             'user',
             :content
@@ -324,12 +383,23 @@ def create_message(
         result = connection.execute(
             user_message_query,
             {
+                "id": str(uuid.uuid4()),
                 "conversation_id": conversation_id,
                 "content": data.content,
             },
         )
 
         user_message = result.mappings().first()
+
+        for document in selected_documents:
+            connection.execute(text("""
+                INSERT INTO message_documents (message_id, document_id, user_id)
+                VALUES (:message_id, :document_id, :user_id)
+            """), {
+                "message_id": user_message["id"],
+                "document_id": document["id"],
+                "user_id": str(user.id),
+            })
 
         # Update conversation timestamp
         update_query = text("""
@@ -355,29 +425,29 @@ def create_message(
         pipeline_result = process_case(
             data.content,
             conversation_history,
+            language=data.language,
+            document_context="\n\n".join(
+                f"Document: {document['name']}\n{document['extracted_text'][:12000]}"
+                for document in selected_documents
+            ),
         )
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Error in process_case: {e}", exc_info=True)
+        logger.error("Case pipeline failed: type=%s", type(e).__name__)
         if isinstance(e, RateLimitError):
             raise HTTPException(
                 status_code=429,
                 detail="The AI service has reached its current usage limit. Please check your Groq quota and try again later.",
             ) from e
-        raise HTTPException(
-            status_code=500,
-            detail="Unable to process the message right now. Please try again.",
-        )
+        raise HTTPException(status_code=503, detail="The legal analysis service is temporarily unavailable. Please try again.") from None
 
     # -----------------------------------------------------
     # 5. Get AI response
     # -----------------------------------------------------
 
     try:
-        ai_response = format_case_response(pipeline_result)
+        ai_response = format_case_response(pipeline_result, data.labels)
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Error formatting AI response: {e}", exc_info=True)
+        logger.error("Case response formatting failed: type=%s", type(e).__name__)
         raise HTTPException(
             status_code=500,
             detail="The system could not generate a valid response. Please try again.",
@@ -389,11 +459,13 @@ def create_message(
 
     assistant_message_query = text("""
         INSERT INTO messages (
+            id,
             conversation_id,
             role,
             content
         )
         VALUES (
+            :id,
             :conversation_id,
             'assistant',
             :content
@@ -410,6 +482,7 @@ def create_message(
         result = connection.execute(
             assistant_message_query,
             {
+                "id": str(uuid.uuid4()),
                 "conversation_id": conversation_id,
                 "content": ai_response,
             },
@@ -439,7 +512,13 @@ def create_message(
 
     return {
         "message": "Message processed successfully",
-        "user_message": dict(user_message),
+        "user_message": {
+            **dict(user_message),
+            "attachments": [
+                {key: document[key] for key in ("id", "name", "type", "size")}
+                for document in selected_documents
+            ],
+        },
         "assistant_message": dict(assistant_message),
     }
 
@@ -502,12 +581,31 @@ async def get_messages(
 
         messages = result.mappings().all()
 
+    message_items = [dict(message) for message in messages]
+    if message_items:
+        attachment_query = text("""
+            SELECT md.message_id, d.id, d.name, d.type, d.size
+            FROM message_documents AS md
+            JOIN documents AS d ON d.id = md.document_id
+            WHERE md.user_id = :user_id AND md.message_id IN :message_ids
+            ORDER BY d.created_at ASC
+        """).bindparams(bindparam("message_ids", expanding=True))
+        with engine.connect() as connection:
+            attachments = connection.execute(attachment_query, {
+                "user_id": str(user.id),
+                "message_ids": [message["id"] for message in message_items],
+            }).mappings().all()
+        attachments_by_message = {}
+        for attachment in attachments:
+            attachments_by_message.setdefault(attachment["message_id"], []).append({
+                key: attachment[key] for key in ("id", "name", "type", "size")
+            })
+        for message in message_items:
+            message["attachments"] = attachments_by_message.get(message["id"], [])
+
     return {
         "message": "Messages retrieved successfully",
-        "data": [
-            dict(message)
-            for message in messages
-        ],
+        "data": message_items,
     }
 
 
@@ -528,6 +626,25 @@ async def delete_conversation(
     """)
 
     with engine.begin() as connection:
+        owned_conversation = connection.execute(text("""
+            SELECT id FROM conversations
+            WHERE id = :conversation_id AND user_id = :user_id
+        """), {
+            "conversation_id": conversation_id,
+            "user_id": str(user.id),
+        }).first()
+        if owned_conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        connection.execute(text("""
+            DELETE FROM message_documents
+            WHERE user_id = :user_id
+              AND message_id IN (
+                  SELECT id FROM messages WHERE conversation_id = :conversation_id
+              )
+        """), {"user_id": str(user.id), "conversation_id": conversation_id})
+        connection.execute(text("""
+            DELETE FROM messages WHERE conversation_id = :conversation_id
+        """), {"conversation_id": conversation_id})
         result = connection.execute(
             query,
             {

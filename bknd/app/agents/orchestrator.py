@@ -15,6 +15,8 @@ from app.legal_sources.statute_retriever import collect_statute_evidence
 def process_case(
     user_message: str,
     conversation_history: list[dict] | None = None,
+    language: str = "en",
+    document_context: str = "",
 ) -> dict:
 
     # -----------------------------------------------------
@@ -35,6 +37,10 @@ def process_case(
     }:
         return {"status": "needs_description"}
 
+    model_message = user_message
+    if document_context:
+        model_message = f"{user_message}\n\nUser-selected document text for context:\n{document_context}"
+
     if conversation_history:
         history_text = "\n".join(
             f"{message['role']}: {message['content']}"
@@ -48,16 +54,16 @@ Previous conversation:
 
 Current user message:
 
-{user_message}
+{model_message}
 """
     else:
-        intake_input = user_message
+        intake_input = model_message
 
     # -----------------------------------------------------
     # 1. Understand the user's situation
     # -----------------------------------------------------
 
-    intake = intake_case(intake_input)
+    intake = intake_case(intake_input, language=language)
 
     # -----------------------------------------------------
     # 2. Classify the case
@@ -80,6 +86,7 @@ Current user message:
             intake_data=intake_data,
             classification_data=classification_data,
             conversation_history=conversation_history,
+            language=language,
         )
         research_future = executor.submit(
             create_research_plan,
@@ -190,6 +197,28 @@ Current user message:
         evidence = general_evidence_future.result()
         evidence.extend(statute_evidence_future.result())
 
+    if not evidence:
+        return {
+            "intake": intake_data,
+            "classification": classification_data,
+            "follow_up": follow_up_data,
+            "research": research.model_dump(),
+            "sources": [
+                {
+                    "name": source.name,
+                    "authority": source.authority,
+                    "jurisdiction": source.jurisdiction,
+                    "source_type": source.source_type,
+                    "official_domain": source.official_domain,
+                }
+                for source in sources
+            ],
+            "evidence": [],
+            "verification": [],
+            "response": {},
+            "status": "evidence_unavailable",
+        }
+
     # -----------------------------------------------------
     # 8. Verify claims/questions against available evidence
     # -----------------------------------------------------
@@ -208,11 +237,12 @@ Current user message:
     # -----------------------------------------------------
 
     final_response = generate_final_response(
-        user_message=user_message,
+        user_message=model_message,
         intake_data=intake_data,
         classification_data=classification_data,
         evidence=evidence,
         verification_results=verification_results,
+        language=language,
     )
 
     # -----------------------------------------------------

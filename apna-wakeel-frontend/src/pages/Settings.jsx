@@ -34,7 +34,7 @@ export default function Settings({ user, onLogout }) {
         <div className="settings-control-row">
           <div><label htmlFor="settings-voice-language">{t("settings.voiceLanguage")}</label><p>{t("settings.voiceLanguageHelp")}</p></div>
           <select id="settings-voice-language" value={voiceLanguage} onChange={(event) => setVoiceLanguage(event.target.value)}>
-            {Object.values(languages).map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}
+            {Object.values(languages).map((item) => <option key={item.code} value={item.code}>{t(`settings.languageName.${item.code}`)}</option>)}
           </select>
         </div>
         <div className="settings-control-row">

@@ -31,8 +31,8 @@ export default function Results({ result, problem, answers = [], onRestart }) {
     { id: "legal-area", label: t("results.legalArea") },
     { id: "explanation", label: t("results.explanation") },
     result.relevantInfo && { id: "relevant-info", label: t("results.relevantInfo") },
-    { id: "authority", label: t("results.authority") },
-    { id: "procedure", label: t("results.timeline") },
+    result.authority && { id: "authority", label: t("results.authority") },
+    result.timeline?.length > 0 && { id: "procedure", label: t("results.timeline") },
     { id: "documents", label: t("results.documents") },
     { id: "evidence", label: t("results.evidence") },
     result.lawyerType && { id: "lawyer-type", label: t("results.lawyerType") },
@@ -61,6 +61,10 @@ export default function Results({ result, problem, answers = [], onRestart }) {
         </p>
       </header>
 
+      {result.sourceStatus === "none" && (
+        <Alert tone="warning" icon="alert" role="status">{t("results.noSources")}</Alert>
+      )}
+
       {result.status === "needs_follow_up" && (
         <Alert tone="warning" icon="alert" role="status">
           {t("results.needsMoreInformation")}
@@ -77,10 +81,7 @@ export default function Results({ result, problem, answers = [], onRestart }) {
               <dt>{t("results.legalArea")}</dt>
               <dd>{result.legalArea.name}</dd>
             </div>
-            <div>
-              <dt>{t("results.authority")}</dt>
-              <dd>{result.authority.name}</dd>
-            </div>
+            {result.authority && <div><dt>{t("results.authority")}</dt><dd>{result.authority.name}</dd></div>}
             {firstStep && (
               <div>
                 <dt>{t("results.firstStep")}</dt>
@@ -152,22 +153,24 @@ export default function Results({ result, problem, answers = [], onRestart }) {
           )}
 
           {/* 5. Responsible authority */}
-          <ResultSection id="authority" title={t("results.authority")} icon="landmark">
-            <div className="authority">
-              <h3>{result.authority.name}</h3>
-              <p>{result.authority.description}</p>
-              <ul className="plain-list">
-                {(result.authority.howToReach || []).map((line) => (
-                  <li key={line}>{line}</li>
-                ))}
-              </ul>
-            </div>
-          </ResultSection>
+          {result.authority && (
+            <ResultSection id="authority" title={t("results.authority")} icon="landmark">
+              <div className="authority">
+                <h3>{result.authority.name}</h3>
+                <p>{result.authority.description}</p>
+                <ul className="plain-list">
+                  {(result.authority.howToReach || []).map((line) => <li key={line}>{line}</li>)}
+                </ul>
+              </div>
+            </ResultSection>
+          )}
 
           {/* 6. Procedure */}
-          <ResultSection id="procedure" title={t("results.timeline")} icon="route">
-            <Timeline items={result.timeline || []} />
-          </ResultSection>
+          {result.timeline?.length > 0 && (
+            <ResultSection id="procedure" title={t("results.timeline")} icon="route">
+              <Timeline items={result.timeline} />
+            </ResultSection>
+          )}
 
           {/* 7 and 8. Documents and evidence, side by side on wide screens */}
           <div className="two-col">
@@ -201,6 +204,7 @@ export default function Results({ result, problem, answers = [], onRestart }) {
                 <SourceCard key={`${source.title}-${index}`} source={source} />
               ))}
             </ul>
+            {(!result.sources || result.sources.length === 0) && <p>{t("results.noSources")}</p>}
           </ResultSection>
 
           {/* 11. Legal aid, only when the back end says it is relevant */}

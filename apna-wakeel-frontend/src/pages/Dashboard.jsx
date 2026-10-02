@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Icon from "../components/Icon.jsx";
 import Logo from "../components/Logo.jsx";
+import CopyAnswerButton from "../components/CopyAnswerButton.jsx";
 import LanguageSwitcher from "../components/LanguageSwitcher.jsx";
 import ThemeToggle from "../components/ThemeToggle.jsx";
 import { useLanguage } from "../i18n/LanguageContext.jsx";
@@ -8,6 +9,7 @@ import { useTheme } from "../theme/ThemeContext.jsx";
 import { createConversation, deleteConversation, getConversationMessages, listConversations, sendChatMessage } from "../services/api.js";
 import { deleteDocument, DOCUMENT_ACCEPT, listDocuments, uploadDocument, validateDocument } from "../services/documents.js";
 import { createSpeechRecognizer } from "../services/speech.js";
+import { sendRecognizedTranscript } from "../services/voiceFlow.js";
 import Documents from "./Documents.jsx";
 import Voice from "./Voice.jsx";
 import Settings from "./Settings.jsx";
@@ -16,22 +18,6 @@ const PIN_STORAGE_KEY = "apna-wakeel:pinned-conversations";
 
 function createId() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function deriveConversationTitle(input, attachments = []) {
-  const text = (input || "").replace(/\s+/g, " ").trim();
-  const candidate = text.toLowerCase();
-
-  if (!text && attachments.length > 0) return attachments[0]?.name || "New Chat";
-  if (!text) return "New Chat";
-  if (/(salary|wages|pay|payment|employer|arrears|unpaid)/i.test(candidate)) return "Unpaid Salary";
-  if (/(security deposit|deposit|landlord|rent)/i.test(candidate)) return "Security Deposit";
-  if (/(harassment|threat|online|abuse|cyber|social media)/i.test(candidate)) return "Online Harassment";
-  if (/(property|dispute|plot|boundary|land|ownership)/i.test(candidate)) return "Property Dispute";
-  if (/(divorce|family|custody|maintenance|domestic)/i.test(candidate)) return "Family Matter";
-  if (/(contract|agreement|payment|fraud|business)/i.test(candidate)) return "Contract Issue";
-
-  return text.length > 48 ? `${text.slice(0, 48).trimEnd()}…` : text;
 }
 
 function getChatErrorKey(error) {
@@ -76,44 +62,100 @@ function ConversationPanel({ conversation, conversationMissing, sending, error, 
   const [draft, setDraft] = useState("");
   const [attachmentError, setAttachmentError] = useState("");
   const [voiceState, setVoiceState] = useState("idle");
+  const [dictationText, setDictationText] = useState("");
   const bottomRef = useRef(null);
   const attachmentInputRef = useRef(null);
   const recognizerRef = useRef(null);
+  const dictationSessionRef = useRef(null);
+  const languageRef = useRef(language);
+  languageRef.current = language;
   const attachedDocuments = selectedAttachments.map((id) => documents.find((item) => item.localId === id)).filter(Boolean);
   const attachmentsReady = attachedDocuments.every((document) => document.backendId);
 
+  useEffect(() => () => {
+    dictationSessionRef.current?.recognizer.cancel();
+    dictationSessionRef.current = null;
+  }, []);
+
   function startDictation() {
-    const recognizer = createSpeechRecognizer(language === "ur" ? "ur" : "en");
+    if (["listening", "processing", "sending"].includes(voiceState)) return;
+    const speechLanguage = language;
+    const recognizer = createSpeechRecognizer(speechLanguage);
     if (!recognizer.supported) {
       setVoiceState("unsupported");
       return;
     }
-    const draftBeforeDictation = draft.trim();
+    const session = { recognizer, language: speechLanguage, finalReceived: false, failed: false, cancelled: false };
+    dictationSessionRef.current = session;
     recognizerRef.current = recognizer;
+    setDictationText("");
     setVoiceState("listening");
     recognizer.start({
       onInterim: (text) => {
-        if (text) setDraft(draftBeforeDictation ? `${draftBeforeDictation} ${text}` : text);
+        if (dictationSessionRef.current === session && !session.cancelled) setDictationText(text);
       },
       onFinal: (text) => {
-        const finalText = text.trim();
-        if (finalText) setDraft(draftBeforeDictation ? `${draftBeforeDictation} ${finalText}` : finalText);
-        setVoiceState("idle");
+        if (dictationSessionRef.current !== session || session.cancelled || session.finalReceived) return;
+        session.finalReceived = true;
+        const finalText = String(text || "").trim();
+        if (!finalText) {
+          setVoiceState("empty");
+          return;
+        }
+        if (languageRef.current !== session.language) {
+          setVoiceState("languageChanged");
+          return;
+        }
+        setDictationText(finalText);
+        setVoiceState("sending");
+        Promise.resolve(sendRecognizedTranscript(
+          finalText,
+          session.language,
+          (content, selectedLanguage) => onSend(content, "", selectedLanguage),
+        )).then((result) => {
+          if (dictationSessionRef.current !== session) return;
+          if (result?.success) {
+            setDictationText("");
+            setVoiceState("idle");
+          } else {
+            setDraft(finalText);
+            setVoiceState("error");
+          }
+        }).catch(() => {
+          if (dictationSessionRef.current !== session) return;
+          setDraft(finalText);
+          setVoiceState("error");
+        });
       },
       onError: (error) => {
+        if (dictationSessionRef.current !== session || session.cancelled) return;
+        session.failed = true;
         if (error.type === "permission-denied") setVoiceState("permission");
         else if (error.type === "unsupported") setVoiceState("unsupported");
-        else if (error.type === "no-speech") setVoiceState("idle");
+        else if (error.type === "no-speech") setVoiceState("empty");
+        else if (error.type === "audio-capture") setVoiceState("audioCapture");
         else setVoiceState("error");
       },
       onEnd: () => {
-        setVoiceState((current) => (current === "listening" ? "idle" : current));
+        if (dictationSessionRef.current !== session || session.cancelled) return;
+        if (!session.finalReceived && !session.failed) setVoiceState("empty");
       },
     });
   }
 
   function stopDictation() {
     recognizerRef.current?.stop();
+    setVoiceState("processing");
+  }
+
+  function cancelDictation() {
+    const session = dictationSessionRef.current;
+    if (session) {
+      session.cancelled = true;
+      session.recognizer.cancel();
+    }
+    dictationSessionRef.current = null;
+    setDictationText("");
     setVoiceState("idle");
   }
 
@@ -172,6 +214,7 @@ function ConversationPanel({ conversation, conversationMissing, sending, error, 
               <article className={`chat-message chat-message-${message.role}`} key={message.id}>
                 <span className="message-label">{message.role === "user" ? t("chat.you") : t("chat.assistant")}</span>
                 <ChatMessageContent content={message.content} />
+                {message.role === "assistant" && <CopyAnswerButton content={message.content} />}
                 {message.attachments?.length > 0 && (
                   <ul className="message-attachments" aria-label={t("documents.attachments")}>
                     {message.attachments.map((attachment) => <li key={attachment.id}><Icon name="file" size={16} /><span>{attachment.name}</span></li>)}
@@ -220,8 +263,10 @@ function ConversationPanel({ conversation, conversationMissing, sending, error, 
             </ul>
           )}
           {voiceState !== "idle" && (
-            <div className="chat-voice-status" role="status" aria-live="polite">
-              {voiceState === "listening" ? t("chat.voiceListening") : voiceState === "unsupported" ? t("chat.voiceInputUnavailable") : t("chat.voiceUnavailable")}
+            <div className="chat-voice-status" role={["permission", "audioCapture", "error"].includes(voiceState) ? "alert" : "status"} aria-live="polite">
+              <span>{voiceState === "listening" ? `${t("chat.voiceListening")} ${dictationText}` : voiceState === "processing" ? t("chat.voiceProcessing") : voiceState === "sending" ? t("chat.voiceSending") : voiceState === "unsupported" ? t("chat.voiceInputUnavailable") : voiceState === "permission" ? t("chat.voicePermission") : voiceState === "empty" ? t("chat.voiceNoSpeech") : voiceState === "audioCapture" ? t("chat.voiceAudioCapture") : voiceState === "languageChanged" ? t("chat.voiceLanguageChanged") : t("chat.voiceUnavailable")}</span>
+              {voiceState === "listening" && <div className="chat-voice-actions"><button className="app-button app-button-quiet" type="button" onClick={stopDictation}><Icon name="stop" size={15} />{t("voice.stop")}</button><button className="app-button app-button-quiet" type="button" onClick={cancelDictation}><Icon name="close" size={15} />{t("voice.cancel")}</button></div>}
+              {voiceState === "processing" && <button className="app-button app-button-quiet" type="button" onClick={cancelDictation}><Icon name="close" size={15} />{t("voice.cancel")}</button>}
             </div>
           )}
           <form className="chat-compose" onSubmit={submit}>
@@ -240,12 +285,12 @@ function ConversationPanel({ conversation, conversationMissing, sending, error, 
             <button
               className="chat-mic"
               type="button"
-              aria-label={t("chat.voiceInput")}
-              title={t("chat.voiceInput")}
+              aria-label={voiceState === "listening" ? t("voice.stop") : t("chat.voiceInput")}
+              title={voiceState === "listening" ? t("voice.stop") : t("chat.voiceInput")}
               onClick={() => (voiceState === "listening" ? stopDictation() : startDictation())}
-              disabled={sending}
+              disabled={sending || ["processing", "sending"].includes(voiceState)}
             >
-              <Icon name="mic" size={17} />
+              <Icon name={voiceState === "listening" ? "stop" : "mic"} size={17} />
             </button>
             <button
               className="chat-voice"
@@ -327,7 +372,7 @@ export default function Dashboard({ pathname, navigate, user, accessToken, onLog
                 ...item,
                 id: item.id,
                 conversationId: item.id,
-                title: item.title || "New Chat",
+                title: item.title || t("chat.newChat"),
                 messages: (messages || []).map((message) => ({
                   id: message.id,
                   role: message.role,
@@ -344,7 +389,7 @@ export default function Dashboard({ pathname, navigate, user, accessToken, onLog
                 ...item,
                 id: item.id,
                 conversationId: item.id,
-                title: item.title || "New Chat",
+                title: item.title || t("chat.newChat"),
                 messages: [],
                 error: null,
               };
@@ -500,7 +545,7 @@ export default function Dashboard({ pathname, navigate, user, accessToken, onLog
     navigate(target ? `/app/chat/${encodeURIComponent(target.id)}` : "/app/chat/new");
   }
 
-  async function requestReply(id, messages, documentIds = []) {
+  async function requestReply(id, messages, documentIds = [], messageLanguage = language) {
     if (sendingIds.has(id)) return;
     setSendingIds((current) => new Set(current).add(id));
     updateConversation(id, (item) => ({ ...item, error: null }));
@@ -510,7 +555,26 @@ export default function Dashboard({ pathname, navigate, user, accessToken, onLog
         conversationId: currentConversation?.conversationId || id,
         messages,
         documentIds,
-        language,
+        language: messageLanguage,
+        labels: {
+          caseSummary: t("chat.caseSummary"),
+          currentGuidance: t("chat.currentGuidance"),
+          nextSteps: t("chat.nextSteps"),
+          documentsNeeded: t("chat.documentsNeeded"),
+          optionalDetails: t("chat.optionalDetails"),
+          officialReferences: t("chat.officialReferences"),
+          aiGenerated: t("chat.aiGenerated"),
+          sourceVerified: t("chat.sourceVerified"),
+          sourceRetrieved: t("chat.sourceRetrieved"),
+          noOfficialEvidence: t("chat.noOfficialEvidence"),
+          uncertainty: t("chat.uncertainty"),
+          legalDisclaimer: t("chat.legalDisclaimer"),
+          underReview: t("chat.underReview"),
+          underReviewNotice: t("chat.underReviewNotice"),
+          needDescription: t("chat.needDescription"),
+          responseUnavailable: t("chat.responseUnavailable"),
+        },
+        newChatTitle: t("chat.newChat"),
         accessToken,
       });
       updateConversation(id, (item) => ({
@@ -533,7 +597,7 @@ export default function Dashboard({ pathname, navigate, user, accessToken, onLog
     }
   }
 
-  async function handleSend(content, requestedConversationId = "") {
+  async function handleSend(content, requestedConversationId = "", messageLanguage = language) {
     setConversationStartError("");
     let target = requestedConversationId
       ? conversations.find((item) => item.id === requestedConversationId)
@@ -551,14 +615,14 @@ export default function Dashboard({ pathname, navigate, user, accessToken, onLog
     if (!target.conversationId) {
       try {
         const created = await createConversation({
-          title: target.title || deriveConversationTitle(content),
+          title: target.title || t("chat.newChat"),
           accessToken,
         });
         target = {
           ...target,
           id: created.id,
           conversationId: created.id,
-          title: created.title || target.title || "New Chat",
+          title: created.title || target.title || t("chat.newChat"),
         };
       } catch (error) {
         if (import.meta.env.DEV) console.error("Could not create conversation:", error);
@@ -581,7 +645,7 @@ export default function Dashboard({ pathname, navigate, user, accessToken, onLog
     setActiveConversationId(target.id);
     setSelectedAttachments([]);
     if (!requestedConversationId && !conversation && pathname !== "/app/voice") navigate(`/app/chat/${encodeURIComponent(target.id)}`);
-    return requestReply(target.id, messages, messageAttachments.map((item) => item.id));
+    return requestReply(target.id, messages, messageAttachments.map((item) => item.id), messageLanguage);
   }
 
   function retryLastMessage() {
@@ -646,8 +710,8 @@ export default function Dashboard({ pathname, navigate, user, accessToken, onLog
     navigate(path);
   }
 
-  function handleVoiceSend(content) {
-    return handleSend(content, activeConversation?.id || "");
+  function handleVoiceSend(content, requestedConversationId = "", messageLanguage = language) {
+    return handleSend(content, requestedConversationId || activeConversation?.id || "", messageLanguage);
   }
 
   function startVoiceConversation() {

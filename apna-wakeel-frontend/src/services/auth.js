@@ -2,6 +2,7 @@ import { API_BASE_URL } from "../lib/apiConfig.js";
 
 const AUTH_SESSION_KEY = "apna-wakeel-session";
 const AUTH_CHANGE_EVENT = "apna-wakeel-auth-change";
+let sessionRefreshPromise;
 
 function normalizeUser(payload) {
   const email = payload?.email || payload?.user?.email || "";
@@ -22,6 +23,7 @@ function normalizeSession(payload) {
   return {
     access_token: payload.access_token,
     refresh_token: payload.refresh_token || "",
+    expires_at: payload.expires_at || null,
     token_type: payload.token_type || "bearer",
     user: normalizeUser(payload),
   };
@@ -117,23 +119,105 @@ export async function signUpWithPassword({ name, email, password }) {
     full_name: name.trim(),
   });
 
+  const session = normalizeSession(data);
+  if (session) persistSession(session);
+
   return {
     user: {
       id: data.user_id,
       email: data.email,
       user_metadata: { full_name: name.trim() },
+      identities: data.already_registered ? [] : undefined,
     },
     message: data.message,
-    session: null,
+    alreadyRegistered: Boolean(data.already_registered),
+    session,
   };
 }
 
-export async function signOut() {
+export async function requestPasswordReset(email) {
+  const { supabase } = await import("../lib/supabase.js");
+  if (!supabase) throw new Error("supabase_not_configured");
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+    redirectTo: `${window.location.origin}/reset-password`,
+  });
+  if (error) throw error;
+}
+
+export async function completePasswordReset(password) {
+  const { supabase } = await import("../lib/supabase.js");
+  if (!supabase) throw new Error("supabase_not_configured");
+  const { data, error } = await supabase.auth.updateUser({ password });
+  if (error) throw error;
+  await supabase.auth.signOut().catch(() => {});
   persistSession(null);
+  return data;
+}
+
+export async function refreshSession(refreshToken) {
+  if (!sessionRefreshPromise) {
+    sessionRefreshPromise = requestJson("/api/auth/refresh", { refresh_token: refreshToken })
+      .then((data) => {
+        const session = normalizeSession(data);
+        if (!session) throw new Error("auth.session_restore_failed");
+        persistSession(session);
+        return session;
+      })
+      .finally(() => {
+        sessionRefreshPromise = null;
+      });
+  }
+  return sessionRefreshPromise;
+}
+
+export async function signOut() {
+  const session = getStoredSession();
+  try {
+    if (session?.access_token && session?.refresh_token) {
+      await requestJson("/api/auth/logout", {
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+      });
+    }
+  } finally {
+    persistSession(null);
+  }
+}
+
+async function validateStoredSession(session) {
+  const data = await requestJson("/api/auth/session", { access_token: session.access_token });
+  return { ...session, user: normalizeUser(data) };
 }
 
 export async function getCurrentSession() {
-  return getStoredSession();
+  const stored = getStoredSession();
+  if (!stored) return null;
+
+  try {
+    const validated = await validateStoredSession(stored);
+    persistSession(validated);
+    return validated;
+  } catch (error) {
+    if (error.status === 401 && stored.refresh_token) {
+      try {
+        const refreshed = await refreshSession(stored.refresh_token);
+        const validated = await validateStoredSession(refreshed);
+        persistSession(validated);
+        return validated;
+      } catch (refreshError) {
+        if (refreshError.status === 401 || refreshError.status === 403) {
+          persistSession(null);
+          return null;
+        }
+        return stored;
+      }
+    }
+    if (error.status === 401 || error.status === 403) {
+      persistSession(null);
+      return null;
+    }
+    return stored;
+  }
 }
 
 export function subscribeToAuthChanges(callback) {
@@ -147,7 +231,6 @@ export function subscribeToAuthChanges(callback) {
 
   const handleSessionChange = () => callback(getStoredSession());
 
-  callback(getStoredSession());
   window.addEventListener("storage", handleStorage);
   window.addEventListener(AUTH_CHANGE_EVENT, handleSessionChange);
 

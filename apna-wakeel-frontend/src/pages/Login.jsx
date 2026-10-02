@@ -6,21 +6,22 @@ import Button from "../components/Button.jsx";
 import Alert from "../components/Alert.jsx";
 import { useLanguage } from "../i18n/LanguageContext.jsx";
 
-const MIN_PASSWORD_LENGTH = 6;
+const MIN_PASSWORD_LENGTH = 8;
 
 function getAuthErrorKey(error) {
   const details = `${error?.code || ""} ${error?.message || ""}`.toLowerCase();
-  if (error?.message === "api.notConfigured" || error?.message === "supabase_not_configured") return "auth.notConfigured";
+  if (error?.message === "api.notConfigured") return "api.notConfigured";
+  if (error?.message === "supabase_not_configured") return "auth.notConfigured";
   if (error?.code === "email_not_confirmed" || /email not confirmed/.test(details)) {
     return "auth.emailNotConfirmed";
   }
-  if (/already registered|already exists|user already exists|user_already_exists/.test(details)) {
+  if (/already registered|already exists|user already exists|user_already_exists|account_exists/.test(details)) {
     return "auth.accountExists";
   }
   if (error?.code === "weak_password" || /weak password|password.{0,80}(weak|short|at least|characters|contain|should)/.test(details)) {
     return "auth.weakPassword";
   }
-  if (error?.code === "invalid_credentials" || /invalid login credentials|invalid credentials/.test(details)) {
+  if (error?.code === "invalid_credentials" || /invalid login credentials|invalid credentials|invalid email or password|invalid_credentials/.test(details)) {
     return "auth.invalidCredentials";
   }
   if (/invalid email|email.*(invalid|not valid)|email_address_invalid/.test(details)) return "login.errEmail";
@@ -32,9 +33,9 @@ function getAuthErrorKey(error) {
   return error?.status ? "auth.providerError" : "auth.genericError";
 }
 
-export default function Login({ onAuthenticated }) {
+export default function Login({ onAuthenticated, initialMode = "login", onModeChange, onForgotPassword }) {
   const { t } = useLanguage();
-  const [mode, setMode] = useState("login"); // "login" or "signup"
+  const [mode, setMode] = useState(initialMode);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -49,7 +50,9 @@ export default function Login({ onAuthenticated }) {
   const isSignup = mode === "signup";
 
   function switchMode() {
-    setMode(isSignup ? "login" : "signup");
+    const nextMode = isSignup ? "login" : "signup";
+    setMode(nextMode);
+    onModeChange?.(nextMode);
     setErrors({});
     setAuthError("");
     setSuccess("");
@@ -64,7 +67,7 @@ export default function Login({ onAuthenticated }) {
     const newErrors = {};
     if (isSignup && name.trim() === "") newErrors.name = t("login.errName");
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) newErrors.email = t("login.errEmail");
-    if (!password || password.length < MIN_PASSWORD_LENGTH) newErrors.password = t("login.errPassword");
+    if (!password || (isSignup && password.length < MIN_PASSWORD_LENGTH)) newErrors.password = t("login.errPassword");
     if (isSignup && confirmPassword !== password) newErrors.confirmPassword = t("login.errConfirmPassword");
 
     setErrors(newErrors);
@@ -79,7 +82,7 @@ export default function Login({ onAuthenticated }) {
 
       if (result.session) {
         onAuthenticated();
-      } else if (isSignup && result.user?.identities?.length === 0) {
+      } else if (isSignup && (result.user?.identities?.length === 0 || result.alreadyRegistered)) {
         setAuthError("auth.accountExists");
       } else {
         setSuccess("auth.confirmEmail");
@@ -100,7 +103,7 @@ export default function Login({ onAuthenticated }) {
       <p className="page-intro">{isSignup ? t("login.signupIntro") : t("login.intro")}</p>
 
       <form onSubmit={handleSubmit} noValidate className="form auth-card" aria-busy={submitting}>
-        {!API_BASE_URL && <Alert tone="warning" icon="alert">{t("auth.notConfigured")}</Alert>}
+        {!API_BASE_URL && <Alert tone="warning" icon="alert">{t("api.notConfigured")}</Alert>}
 
         {isSignup && (
           <div className="field">
@@ -205,6 +208,11 @@ export default function Login({ onAuthenticated }) {
         <Button type="submit" size="lg" disabled={submitting || !API_BASE_URL}>
           {submitting ? t("login.working") : isSignup ? t("login.signupSubmit") : t("login.submit")}
         </Button>
+        {!isSignup && (
+          <button type="button" className="link-button auth-forgot-link" onClick={onForgotPassword}>
+            {t("login.forgotPassword")}
+          </button>
+        )}
       </form>
 
       <div className="auth-links">

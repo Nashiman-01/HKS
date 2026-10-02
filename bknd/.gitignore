@@ -1,0 +1,8 @@
+.env
+.env.*
+__pycache__/
+*.py[cod]
+uploads/
+app.db
+*.db-shm
+*.db-wal

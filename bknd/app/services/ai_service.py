@@ -3,13 +3,11 @@ from groq import Groq
 from app.core.config import settings
 
 
-client = Groq(
-    api_key=settings.groq_api_key,
-    max_retries=1,
-)
-
-
 def generate_response(user_message: str) -> str:
+    if not settings.groq_api_key:
+        raise RuntimeError("groq_not_configured")
+
+    client = Groq(api_key=settings.groq_api_key, max_retries=1)
     response = client.chat.completions.create(
         model=settings.groq_model,
         messages=[
